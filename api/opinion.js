@@ -5,7 +5,9 @@
  *
  * 하는 일:
  * 1) 구글 뉴스 RSS에서 그 종목 관련 최근 헤드라인을 가져옴
- * 2) Claude API에게 업종/이슈 요약을 시킴
+ *    (일반 검색어 + "실적/전망" 검색어 두 가지로 나눠서 검색 →
+ *    향후 실적 전망 관련 뉴스가 더 잘 섞여 들어오게 함)
+ * 2) Claude API에게 업종/이슈 요약 + 향후 1~2년 전망을 시킴
  * 3) 요약 + 헤드라인을 JSON으로 반환
  *
  * Claude API 키는 Vercel 프로젝트의 환경변수(ANTHROPIC_API_KEY)에만
@@ -40,21 +42,29 @@ module.exports = async (req, res) => {
   }
 
   // 1. 구글 뉴스 RSS에서 관련 헤드라인 가져오기 (실패해도 계속 진행)
+  //    일반 검색어 + "실적/전망" 검색어 두 갈래로 나눠서, 향후 실적
+  //    전망 관련 뉴스가 헤드라인에 더 잘 섞여 들어오게 함.
   let headlines = [];
   try {
-    const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(name + ' 주가')}&hl=ko&gl=KR&ceid=KR:ko`;
-    const rssRes = await fetch(rssUrl, {
-      headers: {
-        'User-Agent': (
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-          '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-        ),
-      },
-    });
-    if (rssRes.ok) {
-      const xml = await rssRes.text();
-      headlines = parseRssItems(xml).slice(0, 5);
+    const [generalXml, outlookXml] = await Promise.all([
+      fetchRssXml(`${name} 주가`),
+      fetchRssXml(`${name} 실적 전망`),
+    ]);
+
+    const generalItems = generalXml ? parseRssItems(generalXml) : [];
+    const outlookItems = outlookXml ? parseRssItems(outlookXml) : [];
+
+    // 두 검색 결과를 합치되, 같은 제목은 중복 제거. 전망 관련 헤드라인을
+    // 앞쪽에 배치해서 AI 요약에 더 잘 반영되게 함.
+    const seenTitles = new Set();
+    const merged = [];
+    for (const item of [...outlookItems, ...generalItems]) {
+      if (!seenTitles.has(item.title)) {
+        seenTitles.add(item.title);
+        merged.push(item);
+      }
     }
+    headlines = merged.slice(0, 6);
   } catch (e) {
     // 뉴스 조회 실패해도 AI 요약은 시도함 (헤드라인 없이)
   }
@@ -63,14 +73,20 @@ module.exports = async (req, res) => {
     ? headlines.map((h) => `- ${h.title}`).join('\n')
     : '(관련 뉴스를 찾지 못했습니다)';
 
+  const currentYear = new Date().getFullYear();
+
   const systemPrompt =
     '당신은 주식 섹터/업종 전망을 간단히 설명하는 애널리스트입니다. ' +
     '주어진 종목명과 최근 뉴스 헤드라인을 참고해서, 이 회사가 속한 업종이 ' +
-    '구조적으로 성장하는 업종인지 판단하는 데 참고할 만한 한국어 요약을 ' +
-    '3~4문장으로 작성하세요. 확정적인 투자 판단(사라/팔아라)은 하지 마세요. ' +
+    '구조적으로 성장하는 업종인지, 그리고 뉴스에 언급된 향후 1~2년 ' +
+    `(대략 ${currentYear + 1}~${currentYear + 2}년) 실적/업황 전망이 어떤 ` +
+    '방향인지를 함께 반영한 한국어 요약을 4~5문장으로 작성하세요. ' +
+    '뉴스 헤드라인에 구체적인 수치(매출액, 목표주가 등)가 나오면 그대로 ' +
+    '인용해도 되지만, 헤드라인에 없는 수치를 추정해서 지어내지 마세요. ' +
+    '확정적인 투자 판단(사라/팔아라)은 하지 마세요. ' +
     '반드시 아래 JSON 형식으로만 답변하세요. 다른 텍스트는 포함하지 마세요.\n' +
-    '{"summary": "3~4문장 한국어 요약 (업종 전망, 최근 이슈 위주)"}';
-  const userPrompt = `종목명: ${name}\n최근 뉴스 헤드라인:\n${headlineText}`;
+    '{"summary": "4~5문장 한국어 요약 (업종 전망, 최근 이슈, 향후 1~2년 방향성 위주)"}';
+  const userPrompt = `종목명: ${name}\n최근 뉴스 헤드라인(전망 관련 우선 배치):\n${headlineText}`;
 
   // 2. Claude API 호출 (비용 절감을 위해 Haiku 사용 — 단순 요약 작업)
   try {
@@ -83,7 +99,7 @@ module.exports = async (req, res) => {
       },
       body: JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 400,
+        max_tokens: 450,
         system: systemPrompt,
         messages: [{ role: 'user', content: userPrompt }],
       }),
@@ -114,6 +130,24 @@ module.exports = async (req, res) => {
     res.status(502).json({ error: 'Claude API 호출 중 오류: ' + String(e) });
   }
 };
+
+async function fetchRssXml(query) {
+  try {
+    const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=ko&gl=KR&ceid=KR:ko`;
+    const rssRes = await fetch(rssUrl, {
+      headers: {
+        'User-Agent': (
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+          '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+        ),
+      },
+    });
+    if (!rssRes.ok) return null;
+    return await rssRes.text();
+  } catch (e) {
+    return null;
+  }
+}
 
 function parseRssItems(xml) {
   const items = [];
