@@ -87,14 +87,15 @@ module.exports = async (req, res) => {
     '확정적인 투자 판단(사라/팔아라)은 하지 마세요.\n\n' +
     `추가로, 뉴스 헤드라인 중에 ${currentYear}년 또는 ${nextYear}년 매출액/영업이익/` +
     '순이익에 대한 구체적인 숫자 전망이 명시적으로 언급된 게 있으면 연도별로 ' +
-    '각각 추출하세요. 특정 연도에 대해 명시적으로 언급되지 않았으면 그 연도는 ' +
-    '절대 추정해서 채우지 말고 revenue_eok/profit_eok를 null로 두세요. ' +
+    '각각 추출하세요. 특정 항목이 명시적으로 언급되지 않았으면 그 항목은 ' +
+    '절대 추정해서 채우지 말고 null로 두세요. 매출액/영업이익/당기순이익은 ' +
+    '서로 다른 항목이니 헷갈리지 말고 각각 맞는 자리에 넣으세요. ' +
     '금액은 반드시 "억원" 단위 숫자로 환산하세요(1조원 = 10000억원). ' +
     '반드시 아래 JSON 형식으로만 답변하세요. 다른 텍스트는 포함하지 마세요.\n' +
     '{"summary": "4~5문장 한국어 요약", "estimates": [' +
-    `{"year": ${currentYear}, "revenue_eok": 숫자 또는 null, "profit_eok": 숫자 또는 null}, ` +
-    `{"year": ${nextYear}, "revenue_eok": 숫자 또는 null, "profit_eok": 숫자 또는 null}` +
-    ']}\n(두 연도 다 뉴스에 숫자 전망이 전혀 없으면 각 revenue_eok/profit_eok를 모두 null로 답변하세요)';
+    `{"year": ${currentYear}, "revenue_eok": 숫자 또는 null, "operating_profit_eok": 숫자 또는 null, "profit_eok": 숫자 또는 null}, ` +
+    `{"year": ${nextYear}, "revenue_eok": 숫자 또는 null, "operating_profit_eok": 숫자 또는 null, "profit_eok": 숫자 또는 null}` +
+    ']}\n(두 연도 다 뉴스에 숫자 전망이 전혀 없으면 각 필드를 모두 null로 답변하세요)';
   const userPrompt = `종목명: ${name}\n최근 뉴스 헤드라인(전망 관련 우선 배치):\n${headlineText}`;
 
   // 2. Claude API 호출 (비용 절감을 위해 Haiku 사용 — 단순 요약 작업)
@@ -142,11 +143,13 @@ module.exports = async (req, res) => {
           if (!e || typeof e !== 'object') return null;
           const year = Number(e.year);
           const revenueEok = (e.revenue_eok === null || e.revenue_eok === undefined) ? null : Number(e.revenue_eok);
+          const opProfitEok = (e.operating_profit_eok === null || e.operating_profit_eok === undefined) ? null : Number(e.operating_profit_eok);
           const profitEok = (e.profit_eok === null || e.profit_eok === undefined) ? null : Number(e.profit_eok);
           const validRevenue = (revenueEok !== null && !Number.isNaN(revenueEok)) ? revenueEok : null;
+          const validOpProfit = (opProfitEok !== null && !Number.isNaN(opProfitEok)) ? opProfitEok : null;
           const validProfit = (profitEok !== null && !Number.isNaN(profitEok)) ? profitEok : null;
-          if (Number.isNaN(year) || (validRevenue === null && validProfit === null)) return null;
-          return { year, revenue_eok: validRevenue, profit_eok: validProfit };
+          if (Number.isNaN(year) || (validRevenue === null && validOpProfit === null && validProfit === null)) return null;
+          return { year, revenue_eok: validRevenue, operating_profit_eok: validOpProfit, profit_eok: validProfit };
         })
         .filter(Boolean);
     }
