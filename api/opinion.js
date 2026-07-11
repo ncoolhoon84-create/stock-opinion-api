@@ -42,29 +42,36 @@ module.exports = async (req, res) => {
   }
 
   // 1. 구글 뉴스 RSS에서 관련 헤드라인 가져오기 (실패해도 계속 진행)
-  //    일반 검색어 + "실적/전망" 검색어 두 갈래로 나눠서, 향후 실적
-  //    전망 관련 뉴스가 헤드라인에 더 잘 섞여 들어오게 함.
+  //    세 갈래로 나눠서 검색:
+  //    - 컨센서스 검색어: 매출액/영업이익/순이익 숫자가 실제로 언급될 확률이 가장 높음
+  //    - 실적/전망 검색어: 향후 방향성 관련
+  //    - 일반 검색어: 종목 전반적인 최신 뉴스
   let headlines = [];
+  let consensusHeadlines = [];
   try {
-    const [generalXml, outlookXml] = await Promise.all([
-      fetchRssXml(`${name} 주가`),
+    const [consensusXml, outlookXml, generalXml] = await Promise.all([
+      fetchRssXml(`${name} 컨센서스`),
       fetchRssXml(`${name} 실적 전망`),
+      fetchRssXml(`${name} 주가`),
     ]);
 
-    const generalItems = generalXml ? parseRssItems(generalXml) : [];
+    const consensusItems = consensusXml ? parseRssItems(consensusXml) : [];
     const outlookItems = outlookXml ? parseRssItems(outlookXml) : [];
+    const generalItems = generalXml ? parseRssItems(generalXml) : [];
 
-    // 두 검색 결과를 합치되, 같은 제목은 중복 제거. 전망 관련 헤드라인을
-    // 앞쪽에 배치해서 AI 요약에 더 잘 반영되게 함.
+    consensusHeadlines = consensusItems.slice(0, 5);
+
+    // 화면에 보여줄 뉴스 목록은 세 검색 결과를 합치되, 같은 제목은 중복 제거.
+    // 컨센서스/전망 관련 헤드라인을 앞쪽에 배치해서 AI 요약에도 더 잘 반영되게 함.
     const seenTitles = new Set();
     const merged = [];
-    for (const item of [...outlookItems, ...generalItems]) {
+    for (const item of [...consensusItems, ...outlookItems, ...generalItems]) {
       if (!seenTitles.has(item.title)) {
         seenTitles.add(item.title);
         merged.push(item);
       }
     }
-    headlines = merged.slice(0, 6);
+    headlines = merged.slice(0, 8);
   } catch (e) {
     // 뉴스 조회 실패해도 AI 요약은 시도함 (헤드라인 없이)
   }
@@ -72,6 +79,9 @@ module.exports = async (req, res) => {
   const headlineText = headlines.length
     ? headlines.map((h) => `- ${h.title}`).join('\n')
     : '(관련 뉴스를 찾지 못했습니다)';
+  const consensusHeadlineText = consensusHeadlines.length
+    ? consensusHeadlines.map((h) => `- ${h.title}`).join('\n')
+    : '(컨센서스 관련 뉴스를 찾지 못했습니다)';
 
   const currentYear = new Date().getFullYear();
   const nextYear = currentYear + 1;
@@ -96,7 +106,10 @@ module.exports = async (req, res) => {
     `{"year": ${currentYear}, "revenue_eok": 숫자 또는 null, "operating_profit_eok": 숫자 또는 null, "profit_eok": 숫자 또는 null}, ` +
     `{"year": ${nextYear}, "revenue_eok": 숫자 또는 null, "operating_profit_eok": 숫자 또는 null, "profit_eok": 숫자 또는 null}` +
     ']}\n(두 연도 다 뉴스에 숫자 전망이 전혀 없으면 각 필드를 모두 null로 답변하세요)';
-  const userPrompt = `종목명: ${name}\n최근 뉴스 헤드라인(전망 관련 우선 배치):\n${headlineText}`;
+  const userPrompt =
+    `종목명: ${name}\n\n` +
+    `컨센서스 관련 헤드라인(매출액/영업이익/순이익 숫자가 나올 가능성이 가장 높은 것들, 추정치 추출 시 최우선 참고):\n${consensusHeadlineText}\n\n` +
+    `전체 최근 헤드라인:\n${headlineText}`;
 
   // 2. Claude API 호출 (비용 절감을 위해 Haiku 사용 — 단순 요약 작업)
   try {
