@@ -31,6 +31,7 @@ module.exports = async (req, res) => {
   }
 
   const name = req.query.name;
+  const overviewRaw = req.query.overview || ''; // 원본 기업개요(전문 용어투) — 있으면 쉬운 버전도 같이 만듦
   if (!name) {
     res.status(400).json({ error: 'name 파라미터가 필요합니다. 예: ?name=삼성전자' });
     return;
@@ -94,11 +95,18 @@ module.exports = async (req, res) => {
     '실적/업황 전망이 어떤 방향인지를 함께 반영한 한국어 요약을 4~5문장으로 ' +
     '작성하세요. 뉴스 헤드라인에 구체적인 수치(매출액, 목표주가 등)가 나오면 ' +
     '그대로 인용해도 되지만, 헤드라인에 없는 수치를 추정해서 지어내지 마세요. ' +
-    '확정적인 투자 판단(사라/팔아라)은 하지 마세요. ' +
+    '확정적인 투자 판단(사라/팔아라)은 하지 마세요.\n\n' +
+    '추가로, 아래 두 가지를 주식 투자를 전혀 모르는 완전 초보자(중학생 수준)도 ' +
+    '이해할 수 있도록 아주 쉬운 말로 다시 설명하세요. 전문 용어("연결대상 종속회사", ' +
+    '"컨센서스", "밸류에이션" 같은 말)는 쉬운 말로 풀어 쓰고, 비유를 써도 좋습니다.\n' +
+    '1) easy_overview: 아래 "회사소개 원문"을 쉽게 풀어서 3~4문장으로 설명 ' +
+    '(원문이 없으면 null)\n' +
+    '2) easy_outlook: 위에서 만든 업종전망 요약을 쉽게 풀어서 3~4문장으로 설명\n\n' +
     '반드시 아래 JSON 형식으로만 답변하세요. 다른 텍스트는 포함하지 마세요.\n' +
-    '{"summary": "4~5문장 한국어 요약"}';
+    '{"summary": "4~5문장 한국어 요약", "easy_overview": "쉬운 설명 또는 null", "easy_outlook": "쉬운 설명"}';
   const userPrompt =
     `종목명: ${name}\n\n` +
+    (overviewRaw ? `회사소개 원문(전문 용어 포함):\n${overviewRaw}\n\n` : '') +
     `컨센서스 관련 헤드라인:\n${consensusHeadlineText}\n\n` +
     `전체 최근 헤드라인:\n${headlineText}`;
 
@@ -113,7 +121,7 @@ module.exports = async (req, res) => {
       },
       body: JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 450,
+        max_tokens: 700,
         system: systemPrompt,
         messages: [{ role: 'user', content: userPrompt }],
       }),
@@ -136,10 +144,15 @@ module.exports = async (req, res) => {
     try {
       parsed = JSON.parse(cleaned);
     } catch (e) {
-      parsed = { summary: rawText || '요약 생성에 실패했습니다.' };
+      parsed = { summary: rawText || '요약 생성에 실패했습니다.', easy_overview: null, easy_outlook: null };
     }
 
-    res.status(200).json({ summary: parsed.summary, headlines });
+    const easyOverview = (typeof parsed.easy_overview === 'string' && parsed.easy_overview.trim())
+      ? parsed.easy_overview.trim() : null;
+    const easyOutlook = (typeof parsed.easy_outlook === 'string' && parsed.easy_outlook.trim())
+      ? parsed.easy_outlook.trim() : null;
+
+    res.status(200).json({ summary: parsed.summary, headlines, easyOverview, easyOutlook });
   } catch (e) {
     res.status(502).json({ error: 'Claude API 호출 중 오류: ' + String(e) });
   }
