@@ -121,7 +121,7 @@ module.exports = async (req, res) => {
       },
       body: JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 700,
+        max_tokens: 1300,
         system: systemPrompt,
         messages: [{ role: 'user', content: userPrompt }],
       }),
@@ -138,13 +138,25 @@ module.exports = async (req, res) => {
       .map((b) => b.text || '')
       .join('')
       .trim();
-    const cleaned = rawText.replace(/```json|```/g, '').trim();
+    // 코드펜스 제거 + 문자열 값 안에 낀 실제 줄바꿈을 공백으로 바꿔서
+    // JSON.parse가 깨지지 않게 함 (긴 응답일수록 이 문제가 잘 생김)
+    const cleaned = rawText
+      .replace(/```json|```/g, '')
+      .replace(/\r?\n/g, ' ')
+      .trim();
 
     let parsed;
     try {
       parsed = JSON.parse(cleaned);
     } catch (e) {
-      parsed = { summary: rawText || '요약 생성에 실패했습니다.', easy_overview: null, easy_outlook: null };
+      // JSON 파싱이 그래도 실패하면, 최소한 "summary" 필드만이라도
+      // 정규식으로 뽑아내서 사용자에게 깨진 JSON 원문을 보여주는 사태는 피함
+      const summaryMatch = cleaned.match(/"summary"\s*:\s*"([\s\S]*?)"\s*,\s*"easy_overview"/);
+      parsed = {
+        summary: summaryMatch ? summaryMatch[1] : '요약 생성에 실패했습니다.',
+        easy_overview: null,
+        easy_outlook: null,
+      };
     }
 
     const easyOverview = (typeof parsed.easy_overview === 'string' && parsed.easy_overview.trim())
